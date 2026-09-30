@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -26,6 +27,42 @@ func isDisallowedIP(ip net.IP) bool {
 	// Explicitly reject the common cloud metadata address.
 	if ip.Equal(net.IPv4(169, 254, 169, 254)) {
 		return true
+	}
+	return false
+}
+
+// allowedHosts returns the set of host suffixes that outbound requests are
+// permitted to target. It is sourced from the HTTP_GETTER_ALLOWED_HOSTS
+// environment variable (a comma-separated list of hostnames or domain
+// suffixes, e.g. "example.com,cdn.example.org"). When the variable is empty
+// the allowlist is considered unconfigured.
+func allowedHosts() []string {
+	raw := strings.TrimSpace(os.Getenv("HTTP_GETTER_ALLOWED_HOSTS"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	hosts := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(strings.ToLower(p))
+		if p != "" {
+			hosts = append(hosts, p)
+		}
+	}
+	return hosts
+}
+
+// isAllowedHost reports whether the given host is permitted by the configured
+// allowlist. A host matches if it equals an allowlist entry exactly, or is a
+// subdomain of an allowlist entry. When no allowlist is configured, all hosts
+// are rejected: fetching metadata/images is an explicitly opt-in feature, so
+// the safe default is to deny arbitrary outbound requests (blind SSRF).
+func isAllowedHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, allowed := range allowedHosts() {
+		if host == allowed || strings.HasSuffix(host, "."+allowed) {
+			return true
+		}
 	}
 	return false
 }
@@ -52,6 +89,9 @@ func validateOutboundURL(urlStr string) (*url.URL, error) {
 	}
 	if strings.EqualFold(host, "localhost") {
 		return nil, errors.New("requests to localhost are not allowed")
+	}
+	if !isAllowedHost(host) {
+		return nil, errors.New("host is not on the outbound request allowlist")
 	}
 
 	ips, err := net.LookupIP(host)
