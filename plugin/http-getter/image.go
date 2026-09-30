@@ -4,7 +4,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/microcosm-cc/bluemonday"
@@ -16,11 +15,12 @@ type Image struct {
 }
 
 func GetImage(urlStr string) (*Image, error) {
-	if _, err := url.Parse(urlStr); err != nil {
+	parsedURL, err := validateOutboundURL(urlStr)
+	if err != nil {
 		return nil, err
 	}
 
-	response, err := http.Get(urlStr)
+	response, err := safeHTTPClient().Get(parsedURL.String())
 	if err != nil {
 		return nil, err
 	}
