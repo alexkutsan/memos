@@ -4,11 +4,37 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 
 	getter "github.com/usememos/memos/plugin/http-getter"
 )
+
+// isAllowedURL validates that the URL does not point to internal resources.
+// This prevents SSRF attacks by blocking localhost, private IPs, and internal hostnames.
+func isAllowedURL(urlStr string) error {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return err
+	}
+
+	// Block localhost and loopback
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return fmt.Errorf("access to localhost is not allowed")
+	}
+
+	// Block private IP ranges (simplified check)
+	if strings.HasPrefix(host, "10.") ||
+		strings.HasPrefix(host, "172.16.") ||
+		strings.HasPrefix(host, "192.168.") ||
+		strings.HasPrefix(host, "169.254.") {
+		return fmt.Errorf("access to private networks is not allowed")
+	}
+
+	return nil
+}
 
 func (*APIV1Service) registerGetterPublicRoutes(g *echo.Group) {
 	// GET /get/httpmeta?url={url} - Get website meta.
@@ -37,6 +63,11 @@ func GetWebsiteMetadata(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "Wrong url").SetInternal(err)
 	}
 
+	// Security: validate URL to prevent SSRF
+	if err := isAllowedURL(urlStr); err != nil {
+		return echo.NewHTTPError(http.StatusForbidden, "URL not allowed").SetInternal(err)
+	}
+
 	htmlMeta, err := getter.GetHTMLMeta(urlStr)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusNotAcceptable, fmt.Sprintf("Failed to get website meta with url: %s", urlStr)).SetInternal(err)
@@ -61,6 +92,11 @@ func GetImage(c echo.Context) error {
 	}
 	if _, err := url.Parse(urlStr); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "Wrong url").SetInternal(err)
+	}
+
+	// Security: validate URL to prevent SSRF
+	if err := isAllowedURL(urlStr); err != nil {
+		return echo.NewHTTPError(http.StatusForbidden, "URL not allowed").SetInternal(err)
 	}
 
 	image, err := getter.GetImage(urlStr)
