@@ -253,13 +253,28 @@ func (s *APIV1Service) GetUserByID(c echo.Context) error {
 	ctx := c.Request().Context()
 	// Require an authenticated session to look up a user by numeric ID. This
 	// prevents unauthenticated enumeration of valid user IDs/accounts.
-	if _, ok := c.Get(userIDContextKey).(int32); !ok {
+	currentUserID, ok := c.Get(userIDContextKey).(int32)
+	if !ok {
 		return echo.NewHTTPError(http.StatusUnauthorized, "Missing auth session")
 	}
 
 	id, err := util.ConvertStringToInt32(c.Param("id"))
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "Malformatted user id").SetInternal(err)
+	}
+
+	// Authorization: a user may only look up their own record. Host (admin)
+	// users may look up any user. This prevents an authenticated caller from
+	// enumerating/reading other users' records by iterating numeric IDs.
+	currentUser, err := s.Store.GetUser(ctx, &store.FindUser{ID: &currentUserID})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to find user").SetInternal(err)
+	}
+	if currentUser == nil {
+		return echo.NewHTTPError(http.StatusUnauthorized, "Missing auth session")
+	}
+	if currentUser.Role != store.RoleHost && currentUserID != id {
+		return echo.NewHTTPError(http.StatusForbidden, "Unauthorized to access this user")
 	}
 
 	user, err := s.Store.GetUser(ctx, &store.FindUser{ID: &id})
