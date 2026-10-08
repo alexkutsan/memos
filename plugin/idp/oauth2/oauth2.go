@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -75,6 +76,15 @@ func validatePublicURL(rawURL string) error {
 		return errors.New("requests to localhost are not allowed")
 	}
 
+	// Enforce an allowlist of permitted identity provider hosts/domains. This
+	// is the primary SSRF control: only explicitly trusted hosts may be the
+	// target of server-side requests. The blocklist below (isDisallowedIP) is
+	// retained purely as defense-in-depth. Fail closed when no host is
+	// allowed so that an attacker-controlled public host can never be reached.
+	if !isAllowedHost(host) {
+		return errors.Errorf("host %q is not in the allowlist of permitted identity provider hosts", host)
+	}
+
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		return errors.Wrap(err, "failed to resolve host")
@@ -88,6 +98,48 @@ func validatePublicURL(rawURL string) error {
 		}
 	}
 	return nil
+}
+
+// allowedHosts returns the configured allowlist of permitted identity provider
+// hosts. It is sourced from the MEMOS_OAUTH2_ALLOWED_HOSTS environment
+// variable, a comma-separated list of exact hostnames and/or trusted parent
+// domains (e.g. "accounts.google.com,login.example.com,.okta.com"). When the
+// variable is unset or empty the allowlist is empty, which causes
+// validatePublicURL to reject every host (fail closed).
+func allowedHosts() []string {
+	raw := os.Getenv("MEMOS_OAUTH2_ALLOWED_HOSTS")
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	hosts := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			hosts = append(hosts, strings.ToLower(p))
+		}
+	}
+	return hosts
+}
+
+// isAllowedHost reports whether the given host matches the configured
+// allowlist. A list entry starting with "." (e.g. ".example.com") matches the
+// domain itself and any of its subdomains; any other entry must match exactly.
+func isAllowedHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, allowed := range allowedHosts() {
+		if strings.HasPrefix(allowed, ".") {
+			domain := strings.TrimPrefix(allowed, ".")
+			if host == domain || strings.HasSuffix(host, "."+domain) {
+				return true
+			}
+			continue
+		}
+		if host == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // isDisallowedIP reports whether the given IP address is a loopback,
