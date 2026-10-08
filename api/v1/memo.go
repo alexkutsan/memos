@@ -319,6 +319,13 @@ func (s *APIV1Service) CreateMemo(c echo.Context) error {
 	}
 
 	for _, resourceID := range createMemoRequest.ResourceIDList {
+		resource, err := s.Store.GetResource(ctx, &store.FindResource{ID: &resourceID})
+		if err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to find resource").SetInternal(err)
+		}
+		if resource == nil || resource.CreatorID != userID {
+			return echo.NewHTTPError(http.StatusNotFound, "Resource not found")
+		}
 		if _, err := s.Store.UpsertMemoResource(ctx, &store.UpsertMemoResource{
 			MemoID:     memo.ID,
 			ResourceID: resourceID,
@@ -701,6 +708,13 @@ func (s *APIV1Service) UpdateMemo(c echo.Context) error {
 	if patchMemoRequest.ResourceIDList != nil {
 		addedResourceIDList, removedResourceIDList := getIDListDiff(memo.ResourceIDList, patchMemoRequest.ResourceIDList)
 		for _, resourceID := range addedResourceIDList {
+			resource, err := s.Store.GetResource(ctx, &store.FindResource{ID: &resourceID})
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "Failed to find resource").SetInternal(err)
+			}
+			if resource == nil || resource.CreatorID != userID {
+				return echo.NewHTTPError(http.StatusNotFound, "Resource not found")
+			}
 			if _, err := s.Store.UpsertMemoResource(ctx, &store.UpsertMemoResource{
 				MemoID:     memo.ID,
 				ResourceID: resourceID,
