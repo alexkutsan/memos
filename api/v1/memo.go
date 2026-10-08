@@ -328,6 +328,13 @@ func (s *APIV1Service) CreateMemo(c echo.Context) error {
 	}
 
 	for _, memoRelationUpsert := range createMemoRequest.RelationList {
+		accessible, err := s.isMemoAccessibleByUser(ctx, memoRelationUpsert.RelatedMemoID, userID)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to find related memo").SetInternal(err)
+		}
+		if !accessible {
+			return echo.NewHTTPError(http.StatusNotFound, "Related memo not found")
+		}
 		if _, err := s.Store.UpsertMemoRelation(ctx, &store.MemoRelation{
 			MemoID:        memo.ID,
 			RelatedMemoID: memoRelationUpsert.RelatedMemoID,
@@ -714,9 +721,21 @@ func (s *APIV1Service) UpdateMemo(c echo.Context) error {
 	if patchMemoRequest.RelationList != nil {
 		patchMemoRelationList := make([]*store.MemoRelation, 0)
 		for _, memoRelation := range patchMemoRequest.RelationList {
+			// Verify that the referenced memo exists and is accessible to the
+			// requesting user before accepting/persisting the relation. This
+			// prevents using relatedMemoId as an oracle to enumerate memo IDs
+			// (including private memos belonging to other users).
+			relatedMemoID := memoRelation.RelatedMemoID
+			accessible, err := s.isMemoAccessibleByUser(ctx, relatedMemoID, userID)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "Failed to find related memo").SetInternal(err)
+			}
+			if !accessible {
+				return echo.NewHTTPError(http.StatusNotFound, "Related memo not found")
+			}
 			patchMemoRelationList = append(patchMemoRelationList, &store.MemoRelation{
 				MemoID:        memo.ID,
-				RelatedMemoID: memoRelation.RelatedMemoID,
+				RelatedMemoID: relatedMemoID,
 				Type:          store.MemoRelationType(memoRelation.Type),
 			})
 		}
@@ -845,6 +864,29 @@ func (s *APIV1Service) getMemoDisplayWithUpdatedTsSettingValue(ctx context.Conte
 		}
 	}
 	return memoDisplayWithUpdatedTs, nil
+}
+
+// isMemoAccessibleByUser checks whether the memo identified by memoID exists
+// and is accessible (readable) by the given user. A memo is accessible if the
+// user is its creator, or if its visibility is PUBLIC or PROTECTED (for any
+// authenticated user). This is used to avoid leaking the existence of
+// private memos belonging to other users via object references embedded in
+// request bodies (e.g. relationList.relatedMemoId, resourceIdList).
+func (s *APIV1Service) isMemoAccessibleByUser(ctx context.Context, memoID int32, userID int32) (bool, error) {
+	memo, err := s.Store.GetMemo(ctx, &store.FindMemo{ID: &memoID})
+	if err != nil {
+		return false, err
+	}
+	if memo == nil {
+		return false, nil
+	}
+	if memo.CreatorID == userID {
+		return true, nil
+	}
+	if memo.Visibility == store.Public || memo.Visibility == store.Protected {
+		return true, nil
+	}
+	return false, nil
 }
 
 func convertCreateMemoRequestToMemoMessage(memoCreate *CreateMemoRequest) *store.Memo {
