@@ -251,6 +251,12 @@ func (s *APIV1Service) GetUserByUsername(c echo.Context) error {
 //	@Router		/api/v1/user/{id} [GET]
 func (s *APIV1Service) GetUserByID(c echo.Context) error {
 	ctx := c.Request().Context()
+	// Require an authenticated session to look up a user by numeric ID. This
+	// prevents unauthenticated enumeration of valid user IDs/accounts.
+	if _, ok := c.Get(userIDContextKey).(int32); !ok {
+		return echo.NewHTTPError(http.StatusUnauthorized, "Missing auth session")
+	}
+
 	id, err := util.ConvertStringToInt32(c.Param("id"))
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "Malformatted user id").SetInternal(err)

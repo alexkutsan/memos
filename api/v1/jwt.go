@@ -69,7 +69,16 @@ func JWTMiddleware(server *APIV1Service, next echo.HandlerFunc, secret string) e
 		}
 
 		// Skip validation for server status endpoints.
-		if util.HasPrefixes(path, "/api/v1/ping", "/api/v1/idp", "/api/v1/status", "/api/v1/user") && path != "/api/v1/user/me" && method == http.MethodGet {
+		if util.HasPrefixes(path, "/api/v1/ping", "/api/v1/idp", "/api/v1/status") && method == http.MethodGet {
+			return next(c)
+		}
+
+		// Only a small, well-defined subset of the user endpoints are intentionally
+		// public (the user list and the deprecated lookup-by-username endpoint).
+		// Fetching a specific user by numeric ID (and the current-user endpoint)
+		// must go through full authentication below, otherwise an unauthenticated
+		// caller could enumerate valid user IDs/accounts.
+		if method == http.MethodGet && (path == "/api/v1/user" || strings.HasPrefix(path, "/api/v1/user/name/")) {
 			return next(c)
 		}
 
