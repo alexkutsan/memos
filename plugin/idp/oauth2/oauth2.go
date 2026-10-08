@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 	"golang.org/x/oauth2"
@@ -34,9 +38,72 @@ func NewIdentityProvider(config *store.IdentityProviderOAuth2Config) (*IdentityP
 		}
 	}
 
+	// Validate that the configured endpoints are well-formed, use an allowed
+	// scheme, and do not point at internal/private network resources. This
+	// mitigates Server-Side Request Forgery (SSRF) via attacker-controlled
+	// or misconfigured identity provider URLs.
+	for _, u := range []string{config.AuthURL, config.TokenURL, config.UserInfoURL} {
+		if u == "" {
+			continue
+		}
+		if err := validatePublicURL(u); err != nil {
+			return nil, errors.Wrapf(err, "invalid identity provider URL %q", u)
+		}
+	}
+
 	return &IdentityProvider{
 		config: config,
 	}, nil
+}
+
+// validatePublicURL ensures the given URL uses an allowed scheme and resolves
+// to a public, non-internal IP address. It is used to guard against SSRF
+// attacks where a user-controllable URL is used to make server-side requests.
+func validatePublicURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return errors.Wrap(err, "failed to parse URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.Errorf("unsupported URL scheme %q, only http/https are allowed", parsed.Scheme)
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return errors.New("URL is missing a host")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return errors.New("requests to localhost are not allowed")
+	}
+
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return errors.Wrap(err, "failed to resolve host")
+	}
+	if len(ips) == 0 {
+		return errors.New("host did not resolve to any IP address")
+	}
+	for _, ip := range ips {
+		if isDisallowedIP(ip) {
+			return errors.Errorf("host %q resolves to a disallowed internal/private IP address", host)
+		}
+	}
+	return nil
+}
+
+// isDisallowedIP reports whether the given IP address is a loopback,
+// private, link-local, unspecified, or otherwise internal/reserved address
+// (including common cloud metadata endpoints) that should not be reachable
+// via server-side requests.
+func isDisallowedIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	// Cloud metadata service address (AWS/GCP/Azure/etc.).
+	if ip.Equal(net.IPv4(169, 254, 169, 254)) {
+		return true
+	}
+	return false
 }
 
 // ExchangeToken returns the exchanged OAuth2 token using the given authorization code.
@@ -68,7 +135,22 @@ func (p *IdentityProvider) ExchangeToken(ctx context.Context, redirectURL, code 
 
 // UserInfo returns the parsed user information using the given OAuth2 token.
 func (p *IdentityProvider) UserInfo(token string) (*idp.IdentityProviderUserInfo, error) {
-	client := &http.Client{}
+	// Re-validate the URL at request time to defend against DNS rebinding /
+	// TOCTOU attacks where the host resolves to an internal address only
+	// after the initial configuration validation.
+	if err := validatePublicURL(p.config.UserInfoURL); err != nil {
+		return nil, errors.Wrap(err, "refusing to request user info")
+	}
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if err := validatePublicURL(req.URL.String()); err != nil {
+				return errors.Wrap(err, "refusing to follow redirect")
+			}
+			return nil
+		},
+	}
 	req, err := http.NewRequest(http.MethodGet, p.config.UserInfoURL, nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to new http request")
