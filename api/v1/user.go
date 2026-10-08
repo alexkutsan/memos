@@ -273,8 +273,13 @@ func (s *APIV1Service) GetUserByID(c echo.Context) error {
 	if currentUser == nil {
 		return echo.NewHTTPError(http.StatusUnauthorized, "Missing auth session")
 	}
+
+	// Return an identical "not found" response for both non-existent records
+	// and records the caller is not authorized to view. Distinguishing the two
+	// (e.g. 403 vs 404) would let an attacker enumerate which numeric user IDs
+	// correspond to real accounts.
 	if currentUser.Role != store.RoleHost && currentUserID != id {
-		return echo.NewHTTPError(http.StatusForbidden, "Unauthorized to access this user")
+		return echo.NewHTTPError(http.StatusNotFound, "User not found")
 	}
 
 	user, err := s.Store.GetUser(ctx, &store.FindUser{ID: &id})
