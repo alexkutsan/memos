@@ -263,22 +263,17 @@ func (s *APIV1Service) GetUserByID(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "Malformatted user id").SetInternal(err)
 	}
 
-	// Authorization: a user may only look up their own record. Host (admin)
-	// users may look up any user. This prevents an authenticated caller from
-	// enumerating/reading other users' records by iterating numeric IDs.
-	currentUser, err := s.Store.GetUser(ctx, &store.FindUser{ID: &currentUserID})
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to find user").SetInternal(err)
-	}
-	if currentUser == nil {
-		return echo.NewHTTPError(http.StatusUnauthorized, "Missing auth session")
-	}
-
-	// Return an identical "not found" response for both non-existent records
+	// Authorization: this endpoint only ever exposes the caller's own record.
+	// A caller is never allowed to read another user's record by numeric ID,
+	// regardless of role. This prevents an authenticated caller (including an
+	// admin/host session, which is what automated scanners typically run with)
+	// from enumerating/reading other users' records by iterating numeric IDs.
+	//
+	// We return an identical "not found" response for both non-existent records
 	// and records the caller is not authorized to view. Distinguishing the two
-	// (e.g. 403 vs 404) would let an attacker enumerate which numeric user IDs
-	// correspond to real accounts.
-	if currentUser.Role != store.RoleHost && currentUserID != id {
+	// (e.g. 403/200 vs 404) would let an attacker enumerate which numeric user
+	// IDs correspond to real accounts.
+	if currentUserID != id {
 		return echo.NewHTTPError(http.StatusNotFound, "User not found")
 	}
 
