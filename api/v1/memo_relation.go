@@ -53,6 +53,18 @@ func (s *APIV1Service) GetMemoRelationList(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("ID is not a number: %s", c.Param("memoId"))).SetInternal(err)
 	}
 
+	userID, ok := c.Get(userIDContextKey).(int32)
+	if !ok {
+		userID = 0
+	}
+	accessible, err := s.isMemoAccessibleByUser(ctx, memoID, userID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to find memo").SetInternal(err)
+	}
+	if !accessible {
+		return echo.NewHTTPError(http.StatusNotFound, "Memo not found")
+	}
+
 	memoRelationList, err := s.Store.ListMemoRelations(ctx, &store.FindMemoRelation{
 		MemoID: &memoID,
 	})
@@ -77,7 +89,6 @@ func (s *APIV1Service) GetMemoRelationList(c echo.Context) error {
 //	@Router			/api/v1/memo/{memoId}/relation [POST]
 //
 // NOTES:
-// - Currently not secured
 // - It's possible to create relations to memos that doesn't exist, which will trigger 404 errors when the frontend tries to load them.
 // - It's possible to create multiple relations, though the interface only shows first.
 func (s *APIV1Service) CreateMemoRelation(c echo.Context) error {
@@ -87,9 +98,30 @@ func (s *APIV1Service) CreateMemoRelation(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("ID is not a number: %s", c.Param("memoId"))).SetInternal(err)
 	}
 
+	userID, ok := c.Get(userIDContextKey).(int32)
+	if !ok {
+		return echo.NewHTTPError(http.StatusUnauthorized, "Missing user in session")
+	}
+
+	memoAccessible, err := s.isMemoAccessibleByUser(ctx, memoID, userID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to find memo").SetInternal(err)
+	}
+	if !memoAccessible {
+		return echo.NewHTTPError(http.StatusNotFound, "Memo not found")
+	}
+
 	request := &UpsertMemoRelationRequest{}
 	if err := json.NewDecoder(c.Request().Body).Decode(request); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "Malformatted post memo relation request").SetInternal(err)
+	}
+
+	relatedAccessible, err := s.isMemoAccessibleByUser(ctx, request.RelatedMemoID, userID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to find related memo").SetInternal(err)
+	}
+	if !relatedAccessible {
+		return echo.NewHTTPError(http.StatusNotFound, "Related memo not found")
 	}
 
 	memoRelation, err := s.Store.UpsertMemoRelation(ctx, &store.MemoRelation{
@@ -119,7 +151,6 @@ func (s *APIV1Service) CreateMemoRelation(c echo.Context) error {
 //	@Router			/api/v1/memo/{memoId}/relation/{relatedMemoId}/type/{relationType} [DELETE]
 //
 // NOTES:
-// - Currently not secured.
 // - Will always return true, even if the relation doesn't exist.
 func (s *APIV1Service) DeleteMemoRelation(c echo.Context) error {
 	ctx := c.Request().Context()
@@ -132,6 +163,19 @@ func (s *APIV1Service) DeleteMemoRelation(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Related memo ID is not a number: %s", c.Param("relatedMemoId"))).SetInternal(err)
 	}
 	relationType := store.MemoRelationType(c.Param("relationType"))
+
+	userID, ok := c.Get(userIDContextKey).(int32)
+	if !ok {
+		return echo.NewHTTPError(http.StatusUnauthorized, "Missing user in session")
+	}
+
+	memoAccessible, err := s.isMemoAccessibleByUser(ctx, memoID, userID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to find memo").SetInternal(err)
+	}
+	if !memoAccessible {
+		return echo.NewHTTPError(http.StatusNotFound, "Memo not found")
+	}
 
 	if err := s.Store.DeleteMemoRelation(ctx, &store.DeleteMemoRelation{
 		MemoID:        &memoID,
